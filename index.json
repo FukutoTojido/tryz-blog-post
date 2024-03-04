@@ -1,3 +1,9 @@
-{
-    "test": "1"
-}
+[
+    {
+        "id": "introduction",
+        "title": "Blog Introduction",
+        "desc": "My first blog ever?",
+        "date": "March 4th, 2024",
+        "banner": "banner.png"
+    }
+]
