@@ -1,9 +1,9 @@
 [
     {
         "id": "introduction",
-        "title": "Blog Introduction",
+        "title": "Introduction",
         "desc": "My first blog ever?",
-        "date": "March 4th, 2024",
+        "date": "March 5th, 2024",
         "banner": "banner.png"
     }
 ]
