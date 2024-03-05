@@ -5,5 +5,12 @@
         "desc": "My first blog ever?",
         "date": "March 5th, 2024",
         "banner": "banner.png"
+    },
+    {
+        "id": "osuCTF-writeup",
+        "title": "osu!gaming CTF 2024 write-up",
+        "desc": "This is the write-up for my session at osu!gaming CTF 2024",
+        "date": "March 5th, 2024",
+        "banner": "banner.png"
     }
 ]
