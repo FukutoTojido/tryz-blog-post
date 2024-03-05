@@ -1,0 +1,400 @@
+# osu!gaming CTF 2024 write-up
+So, my first CTF event ever has come to an end at 9th place. Although I think we can get to a higher ranking, for a newcomer like me, it is a satisfying result. The event came with 54 challenges. We managed to clear 43 of them, in which I solved 8 challenges. This blog is going to be a proper write-up for all of my solved challenges. Here we go!
+
+This write-up includes these challenges:
+- `crypto/secret-map`
+- `crypto/roll`
+- `forensics/abnormal-life`
+- `forensics/out-of-click`
+- `forensics/out-of-slide`
+- `osint/when-you-see-it`
+- `osu/sanity-check-2`
+- `osu/sanity-check-3`
+
+## crypto/secret-map
+### Challenge description:
+> Here's an [old, unfinished map](https://osu.ppy.sh/beatmapsets/1680153#osu/3432455) of mine (any collabers?). I tried adding an new diff but it seems to have gotten corrupted - can you help me recover it?
+>
+Attachment: [Alfakyun. - KING.osz](https://ctf.osugaming.lol/uploads/2cdc85778a40b176f4541bc782650cf933dd9997083d69e928cd9b4b85e0c189/Alfakyun.%20-%20KING.osz)
+
+### Solution
+We were given a .osz file so let's see what is its content.
+```
+BeatmapFolder/
+    ├── Alfakyun. - KING (QuintecX) [ryuk eyeka's easy].osu
+    ├── audio.mp3
+    ├── bg.jpg
+    ├── enc.py
+    └── flag.osu.enc
+```
+Right from the bat, we know that the beatmap file has been encrypted in some way using the `enc.py` file:
+```python
+// enc.py
+import os
+
+xor_key = os.urandom(16)
+
+with open("flag.osu", 'rb') as f:
+    plaintext = f.read()
+
+encrypted_data = bytes([plaintext[i] ^ xor_key[i % len(xor_key)] for i in range(len(plaintext))])
+
+with open("flag.osu.enc", 'wb') as f:
+    f.write(encrypted_data)
+```
+Now we know that each character (or I should say `byte`) of the beatmap file has been XOR with a random 16-character key, how can we recover the original file?
+
+Every osu! mapper should knows that a `.osu` file always start with this line
+```
+osu file format v<insert version here>
+```
+Since the line above has over 16 characters, we can easily achieve the key by XOR-ing the first 16 characters of the encrypted file with the term `osu file format `
+
+```python
+with open("flag.osu.enc", 'rb') as f:
+    ciphertext = f.read()
+
+header = b'osu file format '
+
+key = [ciphertext[i] ^ header[i] for i in range(16)]
+plaintext = bytes([ciphertext[i] ^ key[i % 16] for i in range(len(ciphertext))])
+
+with open("flag.osu", 'wb') as f:
+    f.write(plaintext)
+```
+
+We finally get a `.osu` file that is totally recovered. Checking through the content of the file, there is nothing notable as a flag so let's have a look of the actual map itself.
+
+![](https://i.imgur.com/4FyTMlD.png)
+![](https://i.imgur.com/A2vvC3t.png)
+![](https://i.imgur.com/bdwJ60g.png)
+![](https://i.imgur.com/QO8uREG.png)
+![](https://i.imgur.com/QO8uREG.png)
+![](https://i.imgur.com/rqrM2Vz.jpeg)
+![](https://i.imgur.com/DP6rfOv.png)
+> "smh they should have used str0mboli slider" - me, 2024
+
+And that is our flag for this challenge: `osu{xor_xor_xor_by_frums}`
+
+# crypto/roll
+### Challenge description:
+> To help you in your next tourney, you can practice rolling against [me!](https://osu.ppy.sh/users/15458667) > But you'll have to do better than just winning the roll to impress me...
+> 
+> (DM me !help on osu! to get started!)
+
+Attachment:
+[dist.zip](https://ctf.osugaming.lol/uploads/8084169a92bd87290146db2422beca13ddda886f7c1f081c244fc77d68e6e059/dist.zip)
+
+### Solution
+Let's see what DM-ing them on osu! would give me
+![](https://i.imgur.com/kVssivL.png)
+![](https://i.imgur.com/7oOmbyw.png)
+I beat them, so what's next? Where is my flag?
+
+I then headed to the `dist.zip` to see what is inside
+```
+dist/
+    ├── src/
+    │   └── main.rs
+    ├── Cargo.lock
+    ├── Cargo.toml
+    └── cmd.sh
+```
+
+It seems their account is powered by a bot running on Rust. This is a summary of the `main.rs` file:
+- A random number generator that set its seed as the current UNIX time
+- A bot that let you practice rolling using the above generator. If you manage to roll a value that is one value higher than the bot's previous roll five times consecutively, [you're winner](https://i.imgur.com/5QJP4Y7.png). If you lose the streak, you have to start over again.
+
+Hmm... interesting. This challenge wanted to test my gacha luck. Since the roll value ranges from 0 to 99, for every roll, you'll have a 1% chance of getting the correct value. Doing that for 5 times consecutively would have a probability of 0.0000000001, which is definitely somewhat Ultra Super Super Super Rare or else. Can we do something with the RNG?
+
+```rust
+fn get_roll() -> i32 {
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut rng = SmallRng::seed_from_u64(seed);
+    rng.gen_range(1..101)
+}
+```
+
+The seed was based on the current UNIX time, and as we all have known, by giving a seed to a PRNG, the result is going to be the same no matter how many times you run it. Therefore, by implementing a system that run on the same algorithm (in this case, the same seed), we can expect what our next roll value should be and know when to roll.
+
+So [a member of my team](https://github.com/minhducsun2002) coded this simple Rust program that output the roll value of the current and the next 9 seconds:
+
+```rust
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn get_roll(a: SystemTime) -> i32 {
+    let seed = a
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut rng = SmallRng::seed_from_u64(seed);
+    rng.gen_range(1..101)
+}
+
+fn main() {
+    let a = SystemTime::now();
+    for i in 0..10 {
+        let b = a + Duration::from_secs(i);
+        let r = get_roll(b);
+        if i == 0 {
+            println!("=> {r:0>3} <=", r=r);
+        } else {
+            println!("+{} {r:0>3}   ", i, r=r);
+        }
+    }
+}
+```
+
+We have two approaches here:
+- Code an automatic IRC bot that do all the timing for you
+- Do all the timing yourself, by hand
+
+As a proud Computer Science student of the Ho Chi Minh City University of Technology, I would gladly choose ... the latter: **DO ALL THE TIMING YOURSELF, BY HAND**
+
+So, I started working on this, consuming every bit of my sanity. On my first 4 times streak , I was late for about 100ms for the 5th one. I then started again and again. Sometimes I even have to wait for about 10 minutes for the correct value to show up. After all those hard works, this happened:
+
+![](https://i.imgur.com/nUmyMVi.png)
+
+And that was it! The flag! My determination finally paid off: `osu{may_you_win_your_next_tourney_roll}`
+
+## forensics/abnormal-life
+### Challenge description:
+> Few people farm their own map for BP1. [I did](https://osu.ppy.sh/beatmapsets/748836#osu/1577478). That was played 6 years ago though.
+> 
+> Recently I retried the top difficulty and got a terrible score. At least I passed the map with HDDT...But what happened to the life bar on the score screen?
+> 
+> Wrap the string in `osu{}`. Flag format is `osu\{[A-Z0-9_]+\}`.
+
+Attachment: [abnormal.osr](https://ctf.osugaming.lol/uploads/634758b5c9659d6fbc242d6cffd5604c2d6783b9b9a1343d1140364b8e42d970/abnormal.osr)
+
+### Solution
+Ahh yes, the classic (not so classic) Best FriendS beatmap of osu!. Let's have a look at the replay file
+![](https://i.imgur.com/ANNGIfD.jpeg)
+
+A pretty good play I must say. Nice try :D But wait, if you look closely at the HP graph, what is that?
+
+A letter `H`. Hmm... I think I know where this is going. Since I have worked with `.osr` file before for the [node-osuScoreConverter](https://github.com/FukutoTojido/node-osuScoreConverter) project, I'm going to use the same library by, once again, [a member of my team](https://github.com/minhducsun2002/node-osr-parser) to extract the HP graph data.
+
+After extracting, we have an array of points as below:
+```js
+[
+    { timestamp: 0, percentage: 0.5 },
+    { timestamp: 0, percentage: 1 },
+    { timestamp: 0, percentage: 0.75 },
+    { timestamp: 10, percentage: 0.75 },
+    { timestamp: 10, percentage: 0.5 },
+    { timestamp: 10, percentage: 1 },
+    ...
+]
+```
+
+How are we going to plot those data then? There are definitely many methods out there to do it. But for me, I'll just stick with [pixiplayground](https://www.pixiplayground.com/#/edit/XvVuFbyQSzQZ_fvTrIalY) since that is what I'm familiar with. This is the result after I finished drawing.
+![](https://i.imgur.com/h33FrDt.png)
+
+That's it! Our flag is `osu{H1D3_UND3R}`
+
+## forensics/out-of-click
+### Challenge description:
+> I love playing this map but recently I noticed that some of the circles seem off. Can you help me find the locations of the weird circles?
+
+Attachment: [beatmaps.zip](https://ctf.osugaming.lol/uploads/84fb62e66405671aa17577637c72a211ffd973c963e95df69af03bffab2d871b/beatmaps.zip)
+
+### Solution:
+After extracting the zip file, this is what we have:
+```
+beatmaps/
+    ├── 1.jpg
+    ├── 12 - Everything will freeze.mp3
+    ├── bg.jpg
+    ├── normal-hitclap.wav
+    ├── UNDEAD CORPORATION - Everything will freeze (BrokenAppendix) [Out Of Click]
+    ├── UNDEAD CORPORATION - Everything will freeze (Ekoro) [Normal]
+    └── UNDEAD CORPORATION - Everything will freeze (Ekoro) [Time Freeze]
+```
+
+It looks like a normal beatmap file, so I guess I'll import the map to see what's going on. Upon opening the `[Out of click]` difficulty, this happened:
+![](https://i.imgur.com/8cHLRJi.png)
+> "Uh oh"
+
+So I quickly have an examination at the `.osu` file of the difficulty. And to my surprise, the first note of the beatmap has an faulty coordinate:
+```
+111 115,117 123,38225,1,0,0:0:0:0:
+``` 
+Usually, an object in an osu! beatmap only have a coordinate (x;y) ranging from 0 to 512 for `x` and 0 to 384 for `y`, as a float. So having a number separated by space is definitely a signal.
+
+111, 115, 117, 123,... sounds familiar? That's right, it is the ASCII decimal value of the term `osu{`. But where are the rest? By looking again at the `[Difficulty]` section of the map, I noticed that it looked similar to a `Normal` difficulty. Specifically, the `[Normal]` difficulty of the mapset. So I did a file compare and got these lines:
+```
+111 115,117 123,38225,1,0,0:0:0:0:
+66 84,77 67,174225,1,0,0:0:0:0:
+95 49,53 95,65725,1,0,0:0:0:0:
+109 89,95 71,191975,1,0,0:0:0:0:
+48 97,84 125,93975,1,0,0:0:0:0:
+```
+Removing all of the unnecessary parameters of the object, what we have are these values:
+```
+111 115 117 123 95 49 53 95 109 89 95 71 48 97 84 125
+```
+And after translating them to text, we have this flag `osu{_15_mY_G0aT}`
+
+## forensics/out-of-slide
+### Challenge description:
+> Flag should fit this regex: `osu\{[A-Z_]+\}`.
+
+Attachment: [Corrupted Appendix - No title.zip](https://ctf.osugaming.lol/uploads/ccaca5182ac06e643bc037734013c02c5ec6f8ae074c1c6a2f3a268ab66b9e98/Corrupted%20Appendix%20-%20No%20title.zip)
+
+### Solution:
+Once again, we have a beatmap file. Judging from its content with no abnormal file other than the beatmap's audio, background and `.osu`, I think we will have to import it to osu! to see what is going on here.
+
+The beatmap imported successfully and I can even play it. What is the problem here? I opened the `.osu` file to check if there was any flags. Nothing. But wait:
+![](https://i.imgur.com/tTswU8d.png)
+
+There are multiple out of bound objects here. I quickly turned back to the map and realized there were objects at the end of the map that I didn't notice at first D: So how do I get to have a look at those objects then?
+
+Logically, I'll just try to remove the `10` at the beginning of each objects, except for the first three where I'll just need to remove the `1`. I saved the `.osu` file and reloaded. This is what I have:
+![](https://i.imgur.com/67JRRYp.jpeg) 
+
+I see, the same trick as `crypto/secret-map`. So in the end, what I have is this flag: `osu{SLIDERZ}`
+
+## osint/when-you-see-it
+### Challenge description:
+> My friend is so obsessed with osu! that he refused to play any CTF! Today he came to me and sent me this weird GIF, can you understand what he is trying to tell me?
+>
+> Hint:
+> 
+> - He told me this is important at the beginning: "Who is the person in the meme?"
+> - Flag has 3 parts, combining them in order gives the full flag.
+
+Attachment: [challenge.zip](https://ctf.osugaming.lol/uploads/c24c3449c798d1aeaf3e0f99cf8709b0abb946b5de03dad438efca2b731c4d32/challenge.zip)
+
+### Solution
+wysi wysi wysi wysi 
+
+**STOPPPPPPP**
+
+Alright. What do we have here. A gif file right?
+![](https://fukutotojido.s-ul.eu/CY6wVdGr)
+
+Firstly, I thought this might be a GIF header hacking challenge or something. So I headed to [HxD](https://mh-nexus.de/en/hxd/) to read the file binary. The first thing I always do in a hex editor is to check the end of the file and right of the bat, I had some clues:
+![](https://i.imgur.com/Np4jhbK.png)
+
+I quickly realized there should be some kind of file hidden in the `.gif` file, so I tried to `binwalk` it and had a `.zip` file. But the file is encrypted with a password. What am I gonna do?
+![](https://i.imgur.com/PvQMglG.png)
+
+Remember the hint?
+> "Who is the person in the meme?"
+
+I guess most osu! players will know the answer. So I typed in `Aireu` as the password and it is in fact the correct password!
+
+We then got two files, `confidential` and `secret.wav`.
+
+```
+// confidential
+HIGHLY CONFIDENTIAL
+
+<REDACTED>
+I have stored extremely important files here and in another place.
+
+Find it at "osu_game_/[0-9]+/".
+
+As a reward, here is the first part of the flag: `osu{@nd_}`
+
+Yours,
+
+Team Osu!Gaming
+</REDACTED>
+```
+
+Cool! We have the first part of the flag. Let's check out for the `secret.wav`. All I could hear was those \*beep\* \*boop\* sound that resemble a morse code. So I open the file in Audacity to see what is in it:
+![](https://i.imgur.com/ClHwtRW.png)
+
+It is definitely morse code. So after translating the morse code, I got the hex number `4E7A49334E7A4933`. Translating it to text, we got `NzI3NzI3`.
+
+WTFFFFFFFFFFFFF? This doesn't make any sense. So I looked closely and tried continuing translating it from base64, I got `727727`. Combinining with `Find it at "osu_game_/[0-9]+/".`, I think I should focusing on finding what `osu_game_727727` is.
+
+At first, I was trying to find the term on Google, no work. Heading to `r/osugame`, searching for `727727` also return nothing. Finally, I decided to find the term on Twitter and got this result
+![](https://i.imgur.com/DJpIavp.png)
+
+The name should be the second part of the flag. How do I find the third one?
+
+I began to search in their posts and this one caught my mind:
+![](https://i.imgur.com/Umj5d3t.png)
+
+A hex string, let see what does it mean:
+![](https://i.imgur.com/250iD6v.png)
+
+[Yet another sahuang's map](https://osu.ppy.sh/beatmapsets/569986#osu/1208245), I immediately had my attention at the description of the map
+![](https://i.imgur.com/FZ1dswt.png)
+
+And after expanding most of the boxes, I finally have the final part of the flag:
+![](https://i.imgur.com/OJ7fUj8.png)
+
+Our flag for this challenge is: `osu{@nd_wh3n_y0u_fuxx1n_cL1ck3d_nd_c_1T}`
+
+## osu/sanity-check-2
+### Challenge description:
+![](https://i.imgur.com/DRa1Fej.png)
+### Solution
+This task is pretty much straight forward. I first made a replay that has more than 70% of accuracy:
+![](https://i.imgur.com/vV8v7jo.png)
+
+Then I convert the replay to base64 using **CyberChef** and send it to the server using this Python script:
+```python
+from pwn import *
+
+f = open("base64.txt", "r")
+base64 = f.read()
+print(base64)
+
+r = remote("chal.osugaming.lol", 7277)
+r.recvuntil("base64 encoded:")
+r.send(f"""{base64}\n""")
+
+res = r.recvline()
+print(res)
+```
+Finally, I got this response as the flag: `osu{s4n1ty_A_Pr3s3rv3d}`
+
+# osu/sanity-check-3
+## Challenge description:
+![](https://i.imgur.com/UNH67gC.png)
+
+## Solution
+This one is a little bit trickier. The map contains many fast sliders which even if you try your best, you won't be able to hit them. In addition, there is a 2B section which makes Autoplay unable to SS. What should we do now?
+
+I guess we are heading to the dark side this time. That's right, I'm talking about **osu! replay editing**. I'll use [this program](https://github.com/thebetioplane/osuReplayEditorV3) here to edit the replay.
+
+But the question is how we can change the replay so that we can SS the map. Let's have a look at the 2B slider:
+![](https://i.imgur.com/ic8DxYT.png)
+
+The reason for why Autoplay cannot SS is the HitCircle placed at the same timing with the SliderReverse. Autoplay works in a way in which it will try to hit the HitCircle perfectly at the center. Therefore, at the moment the cursor hitted the HitCircle, it had already left the SliderFollowCircle and missed that SliderReverse. However, I noticed a really small overlap between the HitCircle and the SliderFollowCircle. That's why I'll change the cursor position to be in that overlap area, then remove the Autoplay mod.
+![](https://i.imgur.com/S2J8Y6d.png)
+> "Welcome to Vietnamese Offline Mafia"
+
+After running the script below, we got this flag: `osu{this_wont_work_on_bancho}`
+
+```python
+from pwn import *
+
+with open('TAO.osr', 'rb') as f:
+    payload = b64e(f.read()).encode()
+
+r = remote('chal.osugaming.lol', 7278)
+r.recvline()
+r2 = process(['/bin/bash', '-c', r.recvline().decode().strip()])
+r.sendafter(b': ', r2.recvall())
+r.sendlineafter(b': ', payload)
+r.interactive()
+```
+
+Remember chat, do not ever use the tool for the wrong purpose. It is heavily discouraged to submit an edited replay on the official Bancho server.
+
+# Conclusion
+Congrats! You have finally reached the end of this write-up. I hope you can find something valuable in this blog. Placing 9th on the my first CTF event ever doesn't sound bad right? I guess I'll participate in other events someday in the future.
+
+![](https://i.imgur.com/ELtoFts.png)
+> Kudos to all of the members of the team for making this happened 
